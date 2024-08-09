@@ -22,7 +22,7 @@ pub mod prelude {
     pub use crate::{DiagnosticResultExt as _, IteratorExt as _, ResultExt as _};
 }
 
-pub type BoxedDiagnostic<'d> = Box<dyn Diagnostic + 'd>;
+pub type BoxedDiagnostic = Box<dyn Diagnostic + Send + Sync + 'static>;
 
 /// `Result` that includes [`Diagnostic`]s on both success and failure.
 ///
@@ -34,14 +34,14 @@ pub type BoxedDiagnostic<'d> = Box<dyn Diagnostic + 'd>;
 ///
 /// [`Diagnostic`]: miette::Diagnostic
 /// [`DiagnosticResultExt`]: crate::DiagnosticResultExt
-pub type DiagnosticResult<'d, T> = Result<(T, Vec<BoxedDiagnostic<'d>>), Vec1<BoxedDiagnostic<'d>>>;
+pub type DiagnosticResult<T> = Result<(T, Vec<BoxedDiagnostic>), Vec1<BoxedDiagnostic>>;
 
 /// Extension methods for [`Iterator`]s.
 ///
 /// [`Iterator`]: std::iter::Iterator
 pub trait IteratorExt: Iterator + Sized {
-    /// Converts from a type that implements `Iterator<Item = BoxedDiagnostic<'d>>` into
-    /// `DiagnosticResult<'d, ()>`.
+    /// Converts from a type that implements `Iterator<Item = BoxedDiagnostic>` into
+    /// `DiagnosticResult<()>`.
     ///
     /// The [`Diagnostic`] items of the iterator are interpreted as non-errors. Note that the
     /// [`Severity`] is not examined and so the [`Diagnostic`]s may have error-level severities
@@ -49,18 +49,18 @@ pub trait IteratorExt: Iterator + Sized {
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Severity`]: miette::Severity
-    fn into_non_error_diagnostic<'d>(self) -> DiagnosticResult<'d, ()>
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<()>
     where
-        Self: Iterator<Item = BoxedDiagnostic<'d>>;
+        Self: Iterator<Item = BoxedDiagnostic>;
 }
 
 impl<I> IteratorExt for I
 where
     I: Iterator,
 {
-    fn into_non_error_diagnostic<'d>(self) -> DiagnosticResult<'d, ()>
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<()>
     where
-        Self: Iterator<Item = BoxedDiagnostic<'d>>,
+        Self: Iterator<Item = BoxedDiagnostic>,
     {
         Ok(((), self.collect()))
     }
@@ -70,7 +70,7 @@ where
 ///
 /// [`Result`]: std::result::Result
 pub trait ResultExt<T, E> {
-    /// Converts from `Result<T, E>` into `DiagnosticResult<'d, T>`.
+    /// Converts from `Result<T, E>` into `DiagnosticResult<T>`.
     ///
     /// The error type `E` must be a [`Diagnostic`] and is interpreted as an error. Note that the
     /// [`Severity`] is not examined and so the [`Diagnostic`] may have a non-error severity
@@ -78,19 +78,21 @@ pub trait ResultExt<T, E> {
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Severity`]: miette::Severity
-    fn into_error_diagnostic<'d>(self) -> DiagnosticResult<'d, T>
+    fn into_error_diagnostic(self) -> DiagnosticResult<T>
     where
-        E: 'd + Diagnostic;
+        E: Diagnostic + Send + Sync + 'static;
 }
 
 impl<T, E> ResultExt<T, E> for Result<T, E> {
-    fn into_error_diagnostic<'d>(self) -> DiagnosticResult<'d, T>
+    fn into_error_diagnostic(self) -> DiagnosticResult<T>
     where
-        E: 'd + Diagnostic,
+        E: Diagnostic + Send + Sync + 'static,
     {
         match self {
             Ok(output) => Ok((output, vec![])),
-            Err(error) => Err(vec1![Box::new(error) as Box<dyn Diagnostic + 'd>]),
+            Err(error) => Err(vec1![
+                Box::new(error) as Box<dyn Diagnostic + Send + Sync + 'static>
+            ]),
         }
     }
 }
@@ -99,7 +101,7 @@ impl<T, E> ResultExt<T, E> for Result<T, E> {
 ///
 /// [`DiagnosticResult`]: crate::DiagnosticResult
 pub trait DiagnosticResultExt<'d, T> {
-    /// Converts from `DiagnosticResult<'_, T>` into `Option<T>`.
+    /// Converts from `DiagnosticResult<T>` into `Option<T>`.
     ///
     /// This function is similar to [`Result::ok`], but gets only the non-diagnostic output `T`
     /// from the `Ok` variant in [`DiagnosticResult`], discarding diagnostics.
@@ -114,9 +116,9 @@ pub trait DiagnosticResultExt<'d, T> {
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`DiagnosticResult`]: crate::DiagnosticResult
-    fn diagnostics(&self) -> &[BoxedDiagnostic<'d>];
+    fn diagnostics(&self) -> &[BoxedDiagnostic];
 
-    /// Maps `DiagnosticResult<'d, T>` into `DiagnosticResult<'d, U>` by applying a function over
+    /// Maps `DiagnosticResult<T>` into `DiagnosticResult<'d, U>` by applying a function over
     /// the non-diagnostic output of the `Ok` variant.
     ///
     /// This function is similar to [`Result::map`], but maps only the non-diagnostic output `T`
@@ -124,7 +126,7 @@ pub trait DiagnosticResultExt<'d, T> {
     ///
     /// [`DiagnosticResult`]: crate::DiagnosticResult
     /// [`Result::map`]: std::result::Result::map
-    fn map_output<U, F>(self, f: F) -> DiagnosticResult<'d, U>
+    fn map_output<U, F>(self, f: F) -> DiagnosticResult<U>
     where
         F: FnOnce(T) -> U;
 
@@ -136,12 +138,12 @@ pub trait DiagnosticResultExt<'d, T> {
     ///
     /// [`DiagnosticResult`]: crate::DiagnosticResult
     /// [`Result::and_then`]: std::result::Result::and_then
-    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'d, U>
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<U>
     where
-        F: FnOnce(T) -> DiagnosticResult<'d, U>;
+        F: FnOnce(T) -> DiagnosticResult<U>;
 }
 
-impl<'d, T> DiagnosticResultExt<'d, T> for DiagnosticResult<'d, T> {
+impl<'d, T> DiagnosticResultExt<'d, T> for DiagnosticResult<T> {
     fn ok_output(self) -> Option<T> {
         match self {
             Ok((output, _)) => Some(output),
@@ -149,14 +151,14 @@ impl<'d, T> DiagnosticResultExt<'d, T> for DiagnosticResult<'d, T> {
         }
     }
 
-    fn diagnostics(&self) -> &[BoxedDiagnostic<'d>] {
+    fn diagnostics(&self) -> &[BoxedDiagnostic] {
         match self {
             Ok((_, ref diagnostics)) => diagnostics,
             Err(ref diagnostics) => diagnostics,
         }
     }
 
-    fn map_output<U, F>(self, f: F) -> DiagnosticResult<'d, U>
+    fn map_output<U, F>(self, f: F) -> DiagnosticResult<U>
     where
         F: FnOnce(T) -> U,
     {
@@ -166,9 +168,9 @@ impl<'d, T> DiagnosticResultExt<'d, T> for DiagnosticResult<'d, T> {
         }
     }
 
-    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'d, U>
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<U>
     where
-        F: FnOnce(T) -> DiagnosticResult<'d, U>,
+        F: FnOnce(T) -> DiagnosticResult<U>,
     {
         match self {
             Ok((output, mut diagnostics)) => match f(output) {
